@@ -1,13 +1,15 @@
-// DeepAI Neural Style Transfer API
-// This runs on Vercel serverless - NO CORS issues!
+// DeepAI Neural Style Transfer API - v2 (Fixed)
+// Properly handles FormData with node-fetch
+
+const FormData = require('form-data');
+const fetch = require('node-fetch');
 
 module.exports = async (req, res) => {
-  // ✅ CORS headers - allow browser requests
+  // CORS headers
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
-  // Handle preflight OPTIONS request
   if (req.method === 'OPTIONS') {
     return res.status(200).end();
   }
@@ -17,7 +19,7 @@ module.exports = async (req, res) => {
   }
 
   try {
-    console.log('=== DeepAI NST API Called ===');
+    console.log('=== DeepAI NST API v2 Called ===');
     
     const { styleImageUrl, contentImage, apiKey } = req.body;
 
@@ -26,7 +28,7 @@ module.exports = async (req, res) => {
       console.error('❌ API key missing');
       return res.status(400).json({ 
         error: 'DeepAI API key is required',
-        hint: 'Get free key at https://deepai.org/machine-learning-model/neural-style'
+        hint: 'Get your API key from https://deepai.org/dashboard/profile'
       });
     }
 
@@ -37,49 +39,74 @@ module.exports = async (req, res) => {
       });
     }
 
-    console.log('📸 Style Image:', styleImageUrl);
-    console.log('📸 Content Image length:', contentImage.length);
+    console.log('📸 Style Image URL:', styleImageUrl);
+    console.log('📸 Content Image type:', contentImage.substring(0, 30) + '...');
+    console.log('🔑 API Key prefix:', apiKey.substring(0, 10) + '...');
 
-    // Prepare form data for DeepAI
-    // DeepAI expects multipart/form-data
-    const FormData = require('form-data');
+    // Create FormData
     const form = new FormData();
     
-    // Add style image (URL)
-    form.append('style', styleImageUrl);
+    // DeepAI accepts:
+    // - 'style': URL or base64 of style image
+    // - 'image': URL or base64 of content image (NOT 'content')
     
-    // Add content image (base64 data URL)
-    form.append('content', contentImage);
+    form.append('style', styleImageUrl);
+    form.append('image', contentImage);  // Changed from 'content' to 'image'
 
     console.log('🎨 Calling DeepAI Neural Style Transfer...');
+    console.log('   Endpoint: https://api.deepai.org/api/neural-style');
 
-    // ✅ Server-to-server request - NO CORS!
+    // Make request to DeepAI
     const deepaiResponse = await fetch(
       'https://api.deepai.org/api/neural-style',
       {
         method: 'POST',
         headers: {
           'api-key': apiKey,
-          ...form.getHeaders()
+          ...form.getHeaders()  // This adds Content-Type: multipart/form-data
         },
         body: form
       }
     );
 
     console.log('📡 DeepAI Response Status:', deepaiResponse.status);
+    console.log('📡 Response Headers:', JSON.stringify(deepaiResponse.headers.raw()));
+
+    // Get response text first for better error handling
+    const responseText = await deepaiResponse.text();
+    console.log('📡 Response Body:', responseText.substring(0, 200));
 
     if (!deepaiResponse.ok) {
-      const errorText = await deepaiResponse.text();
-      console.error('❌ DeepAI Error Response:', errorText);
+      console.error('❌ DeepAI Error Response:', responseText);
+      
+      // Try to parse as JSON for better error message
+      let errorDetails = responseText;
+      try {
+        const errorJson = JSON.parse(responseText);
+        errorDetails = errorJson.err || errorJson.error || responseText;
+      } catch (e) {
+        // Not JSON, use raw text
+      }
       
       return res.status(deepaiResponse.status).json({ 
         error: 'DeepAI API request failed',
         status: deepaiResponse.status,
-        details: errorText
+        details: errorDetails,
+        hint: 'Check your API key and image formats'
       });
     }
 
-    const result = await deepaiResponse.json();
+    // Parse successful response
+    let result;
+    try {
+      result = JSON.parse(responseText);
+    } catch (e) {
+      console.error('❌ Failed to parse response as JSON');
+      return res.status(500).json({
+        error: 'Invalid response from DeepAI',
+        details: responseText.substring(0, 200)
+      });
+    }
     
     console.log('✅ DeepAI Success!');
     console.log('   ID:', result.id);
@@ -99,7 +126,8 @@ module.exports = async (req, res) => {
     return res.status(500).json({ 
       error: 'Internal server error',
       message: error.message,
-      hint: 'Check Vercel logs for details'
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined,
+      hint: 'Check Vercel Function logs for details'
     });
   }
 };
